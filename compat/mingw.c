@@ -810,7 +810,7 @@ static int environ_size = 0;
 static int environ_alloc = 0;
 
 #undef getenv
-static char *do_getenv(const char *name)
+char *mingw_getenv(const char *name)
 {
 	char *value;
 	int pos;
@@ -826,22 +826,6 @@ static char *do_getenv(const char *name)
 	return value ? &value[1] : NULL;
 }
 #define getenv mingw_getenv
-
-char *mingw_getenv(const char *name)
-{
-	char *result = do_getenv(name);
-	if (!result && !strcmp(name, "TMPDIR")) {
-		/* on Windows it is TMP and TEMP */
-		result = do_getenv("TMP");
-		if (!result)
-			result = do_getenv("TEMP");
-	}
-	else if (!result && !strcmp(name, "TERM")) {
-		/* simulate TERM to enable auto-color (see color.c) */
-		result = "winansi";
-	}
-	return result;
-}
 
 int mingw_putenv(const char *namevalue)
 {
@@ -2120,6 +2104,21 @@ void mingw_startup()
 	tmpenv[i] = NULL;
 	environ_size = i + 1;
 	environ = tmpenv;
+
+	/* fix Windows specific environment settings */
+
+	/* on Windows it is TMP and TEMP */
+	if (!getenv("TMPDIR")) {
+		const char *tmp = getenv("TMP");
+		if (!tmp)
+			tmp = getenv("TEMP");
+		if (tmp)
+			setenv("TMPDIR", tmp, 1);
+	}
+
+	/* simulate TERM to enable auto-color (see color.c) */
+	if (!getenv("TERM"))
+		setenv("TERM", "winansi", 1);
 
 	/* initialize critical section for waitpid pinfo_t list */
 	InitializeCriticalSection(&pinfo_cs);
