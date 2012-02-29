@@ -8,11 +8,6 @@
 #include <winreg.h>
 
 /*
- Functions to be wrapped:
-*/
-#undef isatty
-
-/*
  ANSI codes used by git: m, K
 
  This file is git-specific. Therefore, this file does not attempt
@@ -463,6 +458,37 @@ static HANDLE duplicate_handle(HANDLE hnd)
 	return hresult;
 }
 
+/*
+ * Fix MSVCRT's isatty flag with minimal assumptions on MSVCRT internal data
+ * structures. We assume that the ioinfo structure consists of at least the OS
+ * handle and a critical section, and that an array for the first 32 file
+ * descriptors is preallocated. We only do this for fd 1 and 2, so we should hit
+ * the correct flag byte somewhere in this range.
+ */
+extern __declspec(dllimport) void *__pioinfo[];
+#define MIN_PIOINFO_SIZE 32 * (sizeof(CRITICAL_SECTION) + sizeof(HANDLE))
+#define FPIPE 0x08
+#define FDEV  0x40
+
+static void set_isatty(int fd)
+{
+	int i;
+	unsigned char *pflags = (unsigned char*) __pioinfo[0];
+	/* don't do anything if fd is already a tty */
+	if (isatty(fd))
+		return;
+	for (i = 0; i < MIN_PIOINFO_SIZE; i++) {
+		/* modify flags in pioinfo until we get it right */
+		unsigned char tmp = pflags[i];
+		pflags[i] &= ~FPIPE;
+		pflags[i] |= FDEV;
+		if (isatty(fd))
+			return;
+		pflags[i] = tmp;
+	}
+	die("Setting isatty flag failed for fd %i", fd);
+}
+
 static HANDLE redirect_console(FILE *stream, HANDLE *phcon, int new_fd)
 {
 	/* get original console handle */
@@ -478,8 +504,8 @@ static HANDLE redirect_console(FILE *stream, HANDLE *phcon, int new_fd)
 	if (_dup2(new_fd, fd))
 		die_errno("_dup2(%i, %i) failed", new_fd, fd);
 
-	/* no buffering, or stdout / stderr will be out of sync */
-	setbuf(stream, NULL);
+	/* trick MSVCRT into thinking that this is a tty, not a pipe */
+	set_isatty(fd);
 	return (HANDLE) _get_osfhandle(fd);
 }
 
@@ -532,19 +558,6 @@ void winansi_init(void)
 static int is_same_handle(HANDLE hnd, int fd)
 {
 	return hnd != INVALID_HANDLE_VALUE && hnd == (HANDLE) _get_osfhandle(fd);
-}
-
-/*
- * Return true if stdout / stderr is a pipe redirecting to the console.
- */
-int winansi_isatty(int fd)
-{
-	if (fd == 1 && is_same_handle(hwrite1, 1))
-		return 1;
-	else if (fd == 2 && is_same_handle(hwrite2, 2))
-		return 1;
-	else
-		return isatty(fd);
 }
 
 /*
