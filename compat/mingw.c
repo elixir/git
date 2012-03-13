@@ -1282,6 +1282,12 @@ char **make_augmented_environ(const char *const *vars)
 	return env;
 }
 
+int mingw_putenv(const char *namevalue)
+{
+	environ = env_setenv(environ, namevalue);
+	return 0;
+}
+
 /*
  * Note, this isn't a complete replacement for getaddrinfo. It assumes
  * that service contains a numerical port, or that it is null. It
@@ -2052,7 +2058,7 @@ extern int __wgetmainargs(int *argc, wchar_t ***argv, wchar_t ***env, int glob,
 void mingw_startup()
 {
 	int i, len, maxlen, argc;
-	char *buffer;
+	char *buffer, **tmpenv;
 	wchar_t **wenv, **wargv;
 	_startupinfo si;
 
@@ -2064,6 +2070,16 @@ void mingw_startup()
 	maxlen = wcslen(_wpgmptr);
 	for (i = 1; i < argc; i++)
 		maxlen = max(maxlen, wcslen(wargv[i]));
+	for (i = 0; wenv[i]; i++)
+		maxlen = max(maxlen, wcslen(wenv[i]));
+
+	/*
+	 * nedmalloc can't free CRT memory, allocate resizable environment
+	 * list. Note that xmalloc / xmemdupz etc. use getenv, so we have to
+	 * prepare the new environment in a temporary variable before assigning
+	 * it to environ.
+	 */
+	tmpenv = xcalloc(i + 1, sizeof(char*));
 
 	/* allocate buffer (wchar_t encodes to max 3 UTF-8 bytes) */
 	maxlen = 3 * maxlen + 1;
@@ -2076,7 +2092,12 @@ void mingw_startup()
 		len = xwcstoutf(buffer, wargv[i], maxlen);
 		__argv[i] = xmemdupz(buffer, len);
 	}
+	for (i = 0; wenv[i]; i++) {
+		len = xwcstoutf(buffer, wenv[i], maxlen);
+		tmpenv[i] = xmemdupz(buffer, len);
+	}
 	free(buffer);
+	environ = tmpenv;
 
 	/* initialize critical section for waitpid pinfo_t list */
 	InitializeCriticalSection(&pinfo_cs);
